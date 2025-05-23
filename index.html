@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thermal Stress Simulator</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1000px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        .slider-container { margin: 20px 0; padding: 15px; background-color: #f0f0f0; border-radius: 5px; }
+        .slider-label { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        input[type="range"] { width: 100%; }
+        .button-container { text-align: center; margin: 20px 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+        button { padding: 8px 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        button:hover { background-color: #45a049; }
+        .status-box { padding: 10px; margin: 10px 0; border-radius: 4px; text-align: center; font-weight: bold; }
+        .elastic { background-color: #d4edda; color: #155724; }
+        .plastic { background-color: #fff3cd; color: #856404; }
+        .failed { background-color: #f8d7da; color: #721c24; }
+        #bar-plot, #stress-plot { margin: 20px 0; height: 400px; }
+        #indicator-text { text-align: center; font-weight: bold; margin-top: -10px; margin-bottom: 10px; color: #333; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Thermal Stress Simulator</h1>
+        <div id="indicator-text"></div>
+        <div id="bar-plot"></div>
+        <div class="slider-container">
+            <div class="slider-label">
+                <span>Temperature: <span id="temp-value">20</span>°C</span>
+                <span>Range: -100°C to 300°C</span>
+            </div>
+            <input type="range" id="temp-slider" min="-100" max="300" value="20" step="1">
+        </div>
+        <div class="button-container">
+            <button id="reset-btn">Reset Simulation</button>
+            <button id="inc-btn">Start Increasing Temperature</button>
+            <button id="dec-btn">Start Decreasing Temperature</button>
+        </div>
+        <div id="status-box" class="status-box elastic">Status: Elastic (No permanent deformation)</div>
+        <div id="stress-info">
+            <p>Stress: <span id="stress-value">0.00</span> MPa</p>
+            <p>Strain: <span id="strain-value">0.0000</span>%</p>
+        </div>
+        <div id="stress-plot"></div>
+    </div>
+
+    <script>
+        const L0 = 10.0, alpha = 12e-6, E = 200e9;
+        const yield_stress = 250e6, ultimate_stress = 400e6, T0 = 20;
+        let currentTemp = T0, failed = false, permanentDeformation = false;
+        let isAnimating = false, animationId = null, animationMode = "none";
+
+        const tempSlider = document.getElementById('temp-slider');
+        const tempValue = document.getElementById('temp-value');
+        const resetBtn = document.getElementById('reset-btn');
+        const incBtn = document.getElementById('inc-btn');
+        const decBtn = document.getElementById('dec-btn');
+        const statusBox = document.getElementById('status-box');
+        const stressValue = document.getElementById('stress-value');
+        const strainValue = document.getElementById('strain-value');
+        const indicatorText = document.getElementById('indicator-text');
+
+        function updateIndicator(temp) {
+            const deltaT = temp - T0;
+            if (deltaT > 0) {
+                indicatorText.textContent = 'Heating: Compressive thermal stress develops (bar wants to expand but is restrained)';
+            } else if (deltaT < 0) {
+                indicatorText.textContent = 'Cooling: Tensile thermal stress develops (bar wants to contract but is restrained)';
+            } else {
+                indicatorText.textContent = 'No thermal stress (at reference temperature)';
+            }
+        }
+
+        function updateSimulation(temp) {
+            if (failed) return;
+            currentTemp = temp;
+            tempValue.textContent = temp.toFixed(1);
+            updateIndicator(temp);
+
+            const deltaT = temp - T0;
+            const thermalStrain = alpha * deltaT * 100;
+            const stressVal = -E * (thermalStrain / 100);
+
+            stressValue.textContent = (stressVal / 1e6).toFixed(2);
+            strainValue.textContent = thermalStrain.toFixed(4);
+
+            Plotly.restyle('stress-plot', {
+                x: [[thermalStrain]],
+                y: [[stressVal / 1e6]]
+            }, [5]);
+
+            let barColor = 'steelblue';
+            let statusText = 'Status: Elastic (No permanent deformation)';
+            let statusClass = 'elastic';
+
+            if (!permanentDeformation && Math.abs(stressVal) > yield_stress) {
+                permanentDeformation = true;
+                barColor = 'gold';
+                statusText = 'Status: Plastic Deformation (Permanent damage)';
+                statusClass = 'plastic';
+            }
+
+            if (Math.abs(stressVal) > ultimate_stress) {
+                failed = true;
+                barColor = 'black';
+                statusText = 'Status: FAILED (Fracture occurred)';
+                statusClass = 'failed';
+            }
+
+            statusBox.textContent = statusText;
+            statusBox.className = `status-box ${statusClass}`;
+
+            let bendFactor = 0;
+            if (Math.abs(thermalStrain) > 0.15) {
+                bendFactor = Math.min((Math.abs(thermalStrain) - 0.15) * 2, 3);
+                if (thermalStrain < 0) bendFactor *= -1;
+            }
+
+            const nPoints = 50;
+            const x = Array.from({length: nPoints}, (_, i) => L0 * i / (nPoints - 1));
+            let yTop = x.map(() => 0.3), yBottom = x.map(() => -0.3);
+
+            if (bendFactor !== 0 && !failed) {
+                const yOffset = x.map(xVal => bendFactor * 0.3 * Math.sin(Math.PI * xVal / L0));
+                yTop = yOffset.map(y => y + 0.3);
+                yBottom = yOffset.map(y => y - 0.3);
+            }
+
+            if (failed) {
+                const fracturePoint = L0 / 2;
+                const fractureWidth = 0.5;
+                const leftX = x.filter(xVal => xVal < fracturePoint - fractureWidth/2);
+                const leftYTop = yTop.slice(0, leftX.length);
+                const leftYBottom = yBottom.slice(0, leftX.length);
+                const rightX = x.filter(xVal => xVal > fracturePoint + fractureWidth/2);
+                const rightYTop = yTop.slice(-rightX.length);
+                const rightYBottom = yBottom.slice(-rightX.length);
+
+                Plotly.restyle('bar-plot', {
+                    x: [[...leftX, ...leftX.slice().reverse(), NaN, ...rightX, ...rightX.slice().reverse()]],
+                    y: [[...leftYBottom, ...leftYTop.slice().reverse(), NaN, ...rightYBottom, ...rightYTop.slice().reverse()]],
+                    line: {color: barColor}
+                }, [1]);
+            } else {
+                Plotly.restyle('bar-plot', {
+                    x: [[...x, ...x.slice().reverse()]],
+                    y: [[...yBottom, ...yTop.slice().reverse()]],
+                    line: {color: barColor}
+                }, [1]);
+            }
+        }
+
+        function animateStep() {
+            if (!isAnimating) return;
+            if (animationMode === "increase") currentTemp += 0.5;
+            else if (animationMode === "decrease") currentTemp -= 0.5;
+
+            if (currentTemp > 300) currentTemp = 300;
+            if (currentTemp < -100) currentTemp = -100;
+
+            tempSlider.value = currentTemp;
+            updateSimulation(currentTemp);
+            animationId = requestAnimationFrame(animateStep);
+        }
+
+        tempSlider.addEventListener('input', () => updateSimulation(parseFloat(tempSlider.value)));
+
+        resetBtn.addEventListener('click', () => {
+            failed = false; permanentDeformation = false;
+            currentTemp = T0; tempSlider.value = T0;
+            updateSimulation(T0);
+        });
+
+        incBtn.addEventListener('click', () => {
+            isAnimating = !isAnimating;
+            animationMode = "increase";
+            incBtn.textContent = isAnimating ? 'Stop Increasing' : 'Start Increasing Temperature';
+            if (isAnimating) animateStep(); else cancelAnimationFrame(animationId);
+        });
+
+        decBtn.addEventListener('click', () => {
+            isAnimating = !isAnimating;
+            animationMode = "decrease";
+            decBtn.textContent = isAnimating ? 'Stop Decreasing' : 'Start Decreasing Temperature';
+            if (isAnimating) animateStep(); else cancelAnimationFrame(animationId);
+        });
+
+        function initPlots() {
+            const supports = {
+                x: [-0.5, -0.5, 0, 0, -0.5, NaN, L0, L0, L0+0.5, L0+0.5, L0, L0],
+                y: [-0.5, 0.5, 0.5, -0.5, -0.5, NaN, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5],
+                mode: 'lines', line: {color: 'darkred', width: 2}, fill: 'toself', name: 'Supports'
+            };
+            const bar = {
+                x: [0, 0, L0, L0, 0], y: [-0.3, 0.3, 0.3, -0.3, -0.3], mode: 'lines',
+                line: {color: 'steelblue', width: 2}, fill: 'toself', name: 'Steel Bar'
+            };
+            Plotly.newPlot('bar-plot', [supports, bar], {
+                title: 'Thermal Stress in Restricted Steel Bar', xaxis: {range: [-1, L0+1], showgrid: false, zeroline: false, showticklabels: false},
+                yaxis: {range: [-1, 1.5], showgrid: false, zeroline: false, showticklabels: false}, showlegend: false, width: 900, height: 400
+            });
+
+            const strainElastic = Array.from({length: 50}, (_, i) => -0.0015 + i * 0.00006);
+            const stressElastic = strainElastic.map(s => E * s);
+            const strainPlasticPos = Array.from({length: 50}, (_, i) => 0.0015 + i * 0.00037);
+            const stressPlasticPos = strainPlasticPos.map(s => yield_stress + (ultimate_stress - yield_stress) * (1 - Math.exp(-50*(s - 0.0015))));
+            const strainPlasticNeg = Array.from({length: 50}, (_, i) => -0.0015 - i * 0.00037);
+            const stressPlasticNeg = strainPlasticNeg.map(s => -yield_stress + (-ultimate_stress + yield_stress) * (1 - Math.exp(50*(s + 0.0015))));
+            const strain = [...strainPlasticNeg, ...strainElastic, ...strainPlasticPos];
+            const stress = [...stressPlasticNeg, ...stressElastic, ...stressPlasticPos];
+
+            Plotly.newPlot('stress-plot', [
+                {x: strain.map(s => s * 100), y: stress.map(s => s / 1e6), mode: 'lines', line: {color: 'red', width: 2}},
+                {x: [-0.15, 0.15], y: [yield_stress/1e6, yield_stress/1e6], mode: 'lines', line: {color: 'green', dash: 'dash', width: 1}},
+                {x: [-0.15, 0.15], y: [-yield_stress/1e6, -yield_stress/1e6], mode: 'lines', line: {color: 'green', dash: 'dash', width: 1}},
+                {x: [-2, 2], y: [ultimate_stress/1e6, ultimate_stress/1e6], mode: 'lines', line: {color: 'red', dash: 'dash', width: 1}},
+                {x: [-2, 2], y: [-ultimate_stress/1e6, -ultimate_stress/1e6], mode: 'lines', line: {color: 'red', dash: 'dash', width: 1}},
+                {x: [0], y: [0], mode: 'markers', marker: {color: 'blue', size: 10}}
+            ], {
+                title: 'Stress-Strain Relationship (Steel)', xaxis: {title: 'Strain (%)', range: [-2, 2]}, yaxis: {title: 'Stress (MPa)', range: [-500, 500]}, width: 900, height: 400
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initPlots();
+            updateSimulation(T0);
+        });
+    </script>
+</body>
+</html>
